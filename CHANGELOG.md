@@ -1,5 +1,11 @@
 # mcp-perplexity-search
 
+## 0.0.1
+
+### Patch Changes
+
+- init
+
 ## 0.0.5
 
 ### Patch Changes
