@@ -5,6 +5,10 @@ search capabilities with LLMs. This server provides comprehensive web
 search functionality with support for various result types and
 filtering options.
 
+<a href="https://glama.ai/mcp/servers/v99lwtriyk">
+  <img width="380" height="200" src="https://glama.ai/mcp/servers/v99lwtriyk/badge" />
+</a>
+
 ## Features
 
 - 🔍 Comprehensive web search using DuckDuckGo's search engine
