@@ -19,29 +19,76 @@ const pkg = JSON.parse(
 );
 const { name, version } = pkg;
 
-// DDG API configuration
-const DDG_BASE_URL = 'https://api.duckduckgo.com';
+// SerpAPI configuration
+const SERPAPI_BASE_URL = 'https://serpapi.com/search.json';
+const SERPAPI_KEY = process.env.SERPAPI_API_KEY || '';
 
-interface ddg_search_response {
-	abstract_text: string;
-	abstract_source: string;
-	abstract_url: string;
-	image: string;
-	heading: string;
-	answer: string;
-	redirect: string;
-	related_topics: Array<{
-		text: string;
-		first_url: string;
-	}>;
-	results: Array<{
-		text: string;
-		first_url: string;
-	}>;
-	type: string;
+if (!SERPAPI_KEY) {
+	throw new Error('SERPAPI_API_KEY environment variable is required');
 }
 
-class duckduckgo_server {
+// Assert SERPAPI_KEY is string since we check for existence
+const API_KEY: string = SERPAPI_KEY;
+
+interface SerpApiResponse {
+	search_metadata: {
+		id: string;
+		status: string;
+		json_endpoint: string;
+		created_at: string;
+		processed_at: string;
+		duckduckgo_url: string;
+		raw_html_file: string;
+		prettify_html_file: string;
+		total_time_taken: number;
+	};
+	search_parameters: {
+		engine: string;
+		q: string;
+		kl: string;
+	};
+	search_information: {
+		organic_results_state: string;
+	};
+	organic_results: Array<{
+		position: number;
+		title: string;
+		link: string;
+		snippet: string;
+		favicon?: string;
+	}>;
+	knowledge_graph?: {
+		title: string;
+		description: string;
+		website?: string;
+		thumbnail?: string;
+	};
+	news_results?: Array<{
+		position: number;
+		title: string;
+		link: string;
+		snippet: string;
+		source: string;
+		date: string;
+		thumbnail?: string;
+	}>;
+	related_searches?: Array<{
+		query: string;
+		link: string;
+	}>;
+}
+
+// Cache interface
+interface CacheEntry {
+	timestamp: number;
+	data: SerpApiResponse;
+}
+
+// Cache configuration
+const CACHE_TTL = 3600000; // 1 hour in milliseconds
+const cache = new Map<string, CacheEntry>();
+
+class DuckDuckGoServer {
 	private server: Server;
 
 	constructor() {
@@ -55,6 +102,55 @@ class duckduckgo_server {
 		);
 
 		this.setup_tool_handlers();
+	}
+
+	private format_response(data: SerpApiResponse) {
+		let formatted_response = 'Search Results:\n\n';
+
+		// Add knowledge graph if available
+		if (data.knowledge_graph) {
+			formatted_response += `${data.knowledge_graph.title}\n`;
+			formatted_response += `${data.knowledge_graph.description}\n\n`;
+		}
+
+		// Add organic results
+		if (data.organic_results?.length > 0) {
+			data.organic_results.forEach((result, index) => {
+				formatted_response += `${index + 1}. ${result.title}\n`;
+				formatted_response += `   ${result.snippet}\n`;
+				formatted_response += `   URL: ${result.link}\n\n`;
+			});
+		}
+
+		// Add news results if available
+		const news_results = data.news_results || [];
+		if (news_results.length > 0) {
+			formatted_response += '\nNews Results:\n';
+			news_results.forEach((item, index) => {
+				formatted_response += `${index + 1}. ${item.title}\n`;
+				formatted_response += `   ${item.snippet}\n`;
+				formatted_response += `   Source: ${item.source} - ${item.date}\n`;
+				formatted_response += `   URL: ${item.link}\n\n`;
+			});
+		}
+
+		// Add related searches
+		const related_searches = data.related_searches || [];
+		if (related_searches.length > 0) {
+			formatted_response += '\nRelated Searches:\n';
+			related_searches.forEach((search) => {
+				formatted_response += `- ${search.query}\n`;
+			});
+		}
+
+		return {
+			content: [
+				{
+					type: 'text',
+					text: formatted_response.trim(),
+				},
+			],
+		};
 	}
 
 	private setup_tool_handlers() {
@@ -82,12 +178,6 @@ class duckduckgo_server {
 									description: 'Enable safe search',
 									default: true,
 								},
-								format: {
-									type: 'string',
-									enum: ['json', 'text'],
-									default: 'json',
-									description: 'Response format',
-								},
 							},
 							required: ['query'],
 						},
@@ -110,27 +200,37 @@ class duckduckgo_server {
 					query,
 					region = 'us-en',
 					safe_search = true,
-					format = 'json',
 				} = request.params.arguments as {
 					query: string;
 					region?: string;
 					safe_search?: boolean;
-					format?: 'json' | 'text';
 				};
 
 				try {
-					const search_params = new URLSearchParams({
+					// Check cache first
+					const cache_key = JSON.stringify({
+						query,
+						region,
+						safe_search,
+					});
+					const cached_entry = cache.get(cache_key);
+
+					if (
+						cached_entry &&
+						Date.now() - cached_entry.timestamp < CACHE_TTL
+					) {
+						return this.format_response(cached_entry.data);
+					}
+
+					const params: Record<string, string> = {
+						engine: 'duckduckgo',
 						q: query,
 						kl: region,
-						format: 'json',
-						no_redirect: '1',
-						no_html: '1',
-						skip_disambig: '1',
-					});
+						safe: safe_search ? '1' : '-1',
+						api_key: API_KEY,
+					};
 
-					if (safe_search) {
-						search_params.append('safesearch', '1');
-					}
+					const search_params = new URLSearchParams(params);
 
 					const controller = new AbortController();
 					const timeout_id = setTimeout(
@@ -140,7 +240,7 @@ class duckduckgo_server {
 
 					try {
 						const response = await fetch(
-							`${DDG_BASE_URL}/?${search_params.toString()}`,
+							`${SERPAPI_BASE_URL}?${search_params.toString()}`,
 							{
 								method: 'GET',
 								signal: controller.signal,
@@ -150,58 +250,19 @@ class duckduckgo_server {
 						if (!response.ok) {
 							throw new McpError(
 								ErrorCode.InternalError,
-								`DuckDuckGo API error: ${response.statusText}`,
+								`Search API error: ${response.statusText}`,
 							);
 						}
 
-						const data: ddg_search_response = await response.json();
+						const data: SerpApiResponse = await response.json();
 
-						// Format the response based on user preference
-						if (format === 'text') {
-							let text_response = 'Search Results:\n\n';
+						// Cache the response
+						cache.set(cache_key, {
+							timestamp: Date.now(),
+							data,
+						});
 
-							// Add instant answer if available
-							if (data.abstract_text) {
-								text_response += `Instant Answer:\n${data.abstract_text}\n`;
-								text_response += `Source: ${data.abstract_source} (${data.abstract_url})\n\n`;
-							}
-
-							// Add results
-							if (data.results?.length > 0) {
-								text_response += 'Top Results:\n';
-								data.results.forEach((result, index) => {
-									text_response += `${index + 1}. ${result.text}\n`;
-									text_response += `   URL: ${result.first_url}\n\n`;
-								});
-							}
-
-							// Add related topics
-							if (data.related_topics?.length > 0) {
-								text_response += '\nRelated Topics:\n';
-								data.related_topics.forEach((topic) => {
-									text_response += `- ${topic.text}\n`;
-								});
-							}
-
-							return {
-								content: [
-									{
-										type: 'text',
-										text: text_response,
-									},
-								],
-							};
-						}
-
-						// Return JSON response
-						return {
-							content: [
-								{
-									type: 'json',
-									text: JSON.stringify(data, null, 2),
-								},
-							],
-						};
+						return this.format_response(data);
 					} finally {
 						clearTimeout(timeout_id);
 					}
@@ -231,5 +292,5 @@ class duckduckgo_server {
 	}
 }
 
-const server = new duckduckgo_server();
+const server = new DuckDuckGoServer();
 server.run().catch(console.error);
