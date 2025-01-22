@@ -30,63 +30,17 @@ if (!SERPAPI_KEY) {
 // Assert SERPAPI_KEY is string since we check for existence
 const API_KEY: string = SERPAPI_KEY;
 
-interface SerpApiResponse {
-	search_metadata: {
-		id: string;
-		status: string;
-		json_endpoint: string;
-		created_at: string;
-		processed_at: string;
-		duckduckgo_url: string;
-		raw_html_file: string;
-		prettify_html_file: string;
-		total_time_taken: number;
-	};
-	search_parameters: {
-		engine: string;
-		q: string;
-		kl: string;
-	};
-	search_information: {
-		organic_results_state: string;
-	};
-	organic_results: Array<{
-		position: number;
-		title: string;
-		link: string;
-		snippet: string;
-		favicon?: string;
-	}>;
-	knowledge_graph?: {
-		title: string;
-		description: string;
-		website?: string;
-		thumbnail?: string;
-	};
-	news_results?: Array<{
-		position: number;
-		title: string;
-		link: string;
-		snippet: string;
-		source: string;
-		date: string;
-		thumbnail?: string;
-	}>;
-	related_searches?: Array<{
-		query: string;
-		link: string;
-	}>;
-}
+import { SerpApiResponse, CacheEntry, FormattedResponse } from './types.js';
+import { ServerResult } from '@modelcontextprotocol/sdk/types.js';
 
-// Cache interface
-interface CacheEntry {
-	timestamp: number;
-	data: SerpApiResponse;
-}
+// Import cache singleton
+import { search_cache } from './cache.js';
 
-// Cache configuration
-const CACHE_TTL = 3600000; // 1 hour in milliseconds
-const cache = new Map<string, CacheEntry>();
+// Import response formatter
+import { format_response } from './formatters.js';
+
+// Import configuration
+import { SAFE_SEARCH_LEVELS } from './config.js';
 
 class DuckDuckGoServer {
 	private server: Server;
@@ -102,55 +56,6 @@ class DuckDuckGoServer {
 		);
 
 		this.setup_tool_handlers();
-	}
-
-	private format_response(data: SerpApiResponse) {
-		let formatted_response = 'Search Results:\n\n';
-
-		// Add knowledge graph if available
-		if (data.knowledge_graph) {
-			formatted_response += `${data.knowledge_graph.title}\n`;
-			formatted_response += `${data.knowledge_graph.description}\n\n`;
-		}
-
-		// Add organic results
-		if (data.organic_results?.length > 0) {
-			data.organic_results.forEach((result, index) => {
-				formatted_response += `${index + 1}. ${result.title}\n`;
-				formatted_response += `   ${result.snippet}\n`;
-				formatted_response += `   URL: ${result.link}\n\n`;
-			});
-		}
-
-		// Add news results if available
-		const news_results = data.news_results || [];
-		if (news_results.length > 0) {
-			formatted_response += '\nNews Results:\n';
-			news_results.forEach((item, index) => {
-				formatted_response += `${index + 1}. ${item.title}\n`;
-				formatted_response += `   ${item.snippet}\n`;
-				formatted_response += `   Source: ${item.source} - ${item.date}\n`;
-				formatted_response += `   URL: ${item.link}\n\n`;
-			});
-		}
-
-		// Add related searches
-		const related_searches = data.related_searches || [];
-		if (related_searches.length > 0) {
-			formatted_response += '\nRelated Searches:\n';
-			related_searches.forEach((search) => {
-				formatted_response += `- ${search.query}\n`;
-			});
-		}
-
-		return {
-			content: [
-				{
-					type: 'text',
-					text: formatted_response.trim(),
-				},
-			],
-		};
 	}
 
 	private setup_tool_handlers() {
@@ -174,9 +79,25 @@ class DuckDuckGoServer {
 									default: 'us-en',
 								},
 								safe_search: {
+									type: 'string',
+									description: 'Safe search level (off, moderate, strict)',
+									enum: ['off', 'moderate', 'strict'],
+									default: 'moderate',
+								},
+								date_filter: {
+									type: 'string',
+									description: 'Filter results by date (d: day, w: week, m: month, y: year, or custom range like 2023-01-01..2023-12-31)',
+									pattern: '^([dwmy]|\\d{4}-\\d{2}-\\d{2}\\.\\.\\d{4}-\\d{2}-\\d{2})$',
+								},
+								start: {
+									type: 'number',
+									description: 'Result offset for pagination',
+									minimum: 0,
+								},
+								no_cache: {
 									type: 'boolean',
-									description: 'Enable safe search',
-									default: true,
+									description: 'Bypass cache and fetch fresh results',
+									default: false,
 								},
 							},
 							required: ['query'],
@@ -199,36 +120,56 @@ class DuckDuckGoServer {
 				const {
 					query,
 					region = 'us-en',
-					safe_search = true,
+					safe_search = 'moderate',
+					date_filter,
+					start,
+					no_cache = false,
 				} = request.params.arguments as {
 					query: string;
 					region?: string;
-					safe_search?: boolean;
+					safe_search?: 'off' | 'moderate' | 'strict';
+					date_filter?: string;
+					start?: number;
+					no_cache?: boolean;
 				};
 
 				try {
-					// Check cache first
-					const cache_key = JSON.stringify({
-						query,
-						region,
-						safe_search,
-					});
-					const cached_entry = cache.get(cache_key);
-
-					if (
-						cached_entry &&
-						Date.now() - cached_entry.timestamp < CACHE_TTL
-					) {
-						return this.format_response(cached_entry.data);
+					// Check cache first if not explicitly bypassed
+					if (!no_cache) {
+						const cache_key = JSON.stringify({
+							query,
+							region,
+							safe_search,
+							date_filter,
+							start,
+						});
+						const cached_result = search_cache.get(cache_key);
+						if (cached_result) {
+							const formatted = format_response(cached_result);
+							return {
+								...formatted,
+								_meta: {},
+							} as ServerResult;
+						}
 					}
 
 					const params: Record<string, string> = {
 						engine: 'duckduckgo',
 						q: query,
 						kl: region,
-						safe: safe_search ? '1' : '-1',
+						safe: SAFE_SEARCH_LEVELS[safe_search],
 						api_key: API_KEY,
 					};
+
+					// Add date filter if provided
+					if (date_filter) {
+						params.df = date_filter;
+					}
+
+					// Add pagination if provided
+					if (start !== undefined) {
+						params.start = start.toString();
+					}
 
 					const search_params = new URLSearchParams(params);
 
@@ -239,7 +180,7 @@ class DuckDuckGoServer {
 					); // 30 second timeout
 
 					try {
-						const response = await fetch(
+						const api_response = await fetch(
 							`${SERPAPI_BASE_URL}?${search_params.toString()}`,
 							{
 								method: 'GET',
@@ -247,22 +188,32 @@ class DuckDuckGoServer {
 							},
 						);
 
-						if (!response.ok) {
+						if (!api_response.ok) {
 							throw new McpError(
 								ErrorCode.InternalError,
-								`Search API error: ${response.statusText}`,
+								`Search API error: ${api_response.statusText}`,
 							);
 						}
 
-						const data: SerpApiResponse = await response.json();
+						const data: SerpApiResponse = await api_response.json();
 
-						// Cache the response
-						cache.set(cache_key, {
-							timestamp: Date.now(),
-							data,
-						});
+						// Cache the response if caching wasn't explicitly disabled
+						if (!no_cache) {
+							const cache_key = JSON.stringify({
+								query,
+								region,
+								safe_search,
+								date_filter,
+								start,
+							});
+							search_cache.set(cache_key, data);
+						}
 
-						return this.format_response(data);
+						const formatted = format_response(data);
+						return {
+							...formatted,
+							_meta: {},
+						} as ServerResult;
 					} finally {
 						clearTimeout(timeout_id);
 					}
