@@ -1,5 +1,7 @@
 # mcp-duckduckgo-search
 
+[![smithery badge](https://smithery.ai/badge/@spences10/mcp-duckduckgo-search)](https://smithery.ai/server/@spences10/mcp-duckduckgo-search)
+
 A Model Context Protocol (MCP) server for integrating DuckDuckGo
 search capabilities with LLMs. This server provides comprehensive web
 search functionality with support for various result types and
@@ -8,6 +10,7 @@ filtering options.
 <a href="https://glama.ai/mcp/servers/v99lwtriyk">
   <img width="380" height="200" src="https://glama.ai/mcp/servers/v99lwtriyk/badge" />
 </a>
+
 
 ## Features
 
@@ -47,6 +50,14 @@ Add this to your Cline MCP settings:
 		}
 	}
 }
+```
+
+### Installing via Smithery
+
+To install DuckDuckGo Search for Claude Desktop automatically via [Smithery](https://smithery.ai/server/@spences10/mcp-duckduckgo-search):
+
+```bash
+npx -y @smithery/cli install @spences10/mcp-duckduckgo-search --client claude
 ```
 
 ### Claude Desktop with WSL Configuration
