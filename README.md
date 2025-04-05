@@ -1,5 +1,17 @@
 # mcp-duckduckgo-search
 
+---
+
+## ⚠️ Notice
+
+**This repository is no longer maintained.**
+
+The functionality of this tool is now available in [mcp-omnisearch](https://github.com/spences10/mcp-omnisearch), which combines multiple MCP tools in one unified package.
+
+Please use [mcp-omnisearch](https://github.com/spences10/mcp-omnisearch) instead.
+
+---
+
 A Model Context Protocol (MCP) server for integrating DuckDuckGo
 search capabilities with LLMs. This server provides comprehensive web
 search functionality with support for various result types and
